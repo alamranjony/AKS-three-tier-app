@@ -1,6 +1,6 @@
 # Production-Ready Kubernetes Platform on Azure
 
-Two Node.js apps (frontend + backend), containerized, deployed to Azure
+Frontend and backend app with Azure Postgresql, containerized, deployed to Azure
 Kubernetes Service via an Azure DevOps pipeline, on infrastructure
 provisioned by custom Terraform modules.
 
