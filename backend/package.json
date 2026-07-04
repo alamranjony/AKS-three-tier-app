@@ -1,0 +1,15 @@
+{
+  "name": "devops-assessment-backend",
+  "version": "1.0.0",
+  "description": "Backend API for DevOps assessment",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

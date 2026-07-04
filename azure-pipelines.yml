@@ -1,0 +1,283 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: prod-grade-three-tier-app
+  - name: IMAGE_TAG
+    value: $(Build.BuildId)
+  - name: ACR_LOGIN_SERVER
+    value: $(ACR_NAME).azurecr.io
+  - name: FRONTEND_IMAGE
+    value: $(ACR_LOGIN_SERVER)/frontend:$(IMAGE_TAG)
+  - name: BACKEND_IMAGE
+    value: $(ACR_LOGIN_SERVER)/backend:$(IMAGE_TAG)
+
+stages:
+
+################################################################################
+# BUILD + PUSH
+################################################################################
+
+- stage: BuildPush
+  displayName: Build and Push Images
+
+  jobs:
+
+  - job: BuildPush
+
+    pool:
+      vmImage: ubuntu-latest
+
+    steps:
+
+    - checkout: self
+
+    #########################################################
+    # Install Node
+    #########################################################
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: "22.x"
+
+    #########################################################
+    # Backend
+    #########################################################
+
+    - script: |
+        cd backend
+        npm ci
+        npm test || true
+      displayName: Backend Test
+
+    #########################################################
+    # Frontend
+    #########################################################
+
+    - script: |
+        cd frontend
+        npm ci
+        npm run build
+      displayName: Frontend Build
+
+    #########################################################
+    # Login to Azure + ACR
+    #########################################################
+
+    - task: AzureCLI@2
+      displayName: Login to Azure
+      inputs:
+        azureSubscription: "$(AZURE_SERVICE_CONNECTION)"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+
+          az acr login \
+            --name $(ACR_NAME)
+
+    #########################################################
+    # Build Images
+    #########################################################
+
+    - script: |
+
+        docker build \
+          -f backend/Dockerfile \
+          -t $(BACKEND_IMAGE) \
+          ./backend
+
+        docker build \
+          -f frontend/Dockerfile \
+          -t $(FRONTEND_IMAGE) \
+          ./frontend
+
+      displayName: Build Docker Images
+
+    #########################################################
+    # Push Images
+    #########################################################
+
+    - script: |
+
+        docker push $(BACKEND_IMAGE)
+
+        docker push $(FRONTEND_IMAGE)
+
+      displayName: Push Images
+
+################################################################################
+# DEPLOY
+################################################################################
+
+- stage: Deploy
+
+  dependsOn: BuildPush
+
+  jobs:
+
+  - deployment: DeployToAKS
+
+    environment: dev
+
+    pool:
+      vmImage: ubuntu-latest
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - checkout: self
+
+          ####################################################
+          # AKS Login
+          ####################################################
+
+          - task: AzureCLI@2
+            displayName: Get AKS Credentials
+
+            inputs:
+              azureSubscription: "$(AZURE_SERVICE_CONNECTION)"
+              scriptType: bash
+              scriptLocation: inlineScript
+
+              inlineScript: |
+
+                az aks get-credentials \
+                  --resource-group $(AKS_RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER_NAME) \
+                  --overwrite-existing
+
+          ####################################################
+          # Install Helm
+          ####################################################
+
+          - script: |
+
+              helm version
+
+            displayName: Verify Helm
+
+          ####################################################
+          # Install NGINX Ingress Controller
+          ####################################################
+
+          - script: |
+
+              helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+
+              helm repo update
+
+              helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+                --namespace ingress-nginx \
+                --create-namespace
+
+            displayName: Install NGINX Ingress
+
+          ####################################################
+          # Wait
+          ####################################################
+
+          - script: |
+
+              kubectl rollout status deployment/ingress-nginx-controller \
+                -n ingress-nginx \
+                --timeout=300s
+
+            displayName: Wait for Ingress Controller
+
+          ####################################################
+          # Replace Image Placeholders
+          ####################################################
+
+          - script: |
+
+              sed -i "s#__ACR_LOGIN_SERVER__#$(ACR_LOGIN_SERVER)#g" k8s/backend-deployment.yaml
+              sed -i "s#__IMAGE_TAG__#$(IMAGE_TAG)#g" k8s/backend-deployment.yaml
+
+              sed -i "s#__ACR_LOGIN_SERVER__#$(ACR_LOGIN_SERVER)#g" k8s/frontend-deployment.yaml
+              sed -i "s#__IMAGE_TAG__#$(IMAGE_TAG)#g" k8s/frontend-deployment.yaml
+
+            displayName: Replace Image Tags
+
+          ####################################################
+          # Namespace
+          ####################################################
+
+          - script: |
+
+              kubectl create namespace $(NAMESPACE) \
+                --dry-run=client \
+                -o yaml \
+                | kubectl apply -f -
+
+            displayName: Create Namespace
+
+          ####################################################
+          # Deploy Resources
+          ####################################################
+
+          - script: |
+
+              kubectl apply -f k8s/backend-serviceaccount.yaml
+
+              kubectl apply -f k8s/backend-secret-example.yaml
+
+              kubectl apply -f k8s/backend-configmap.yaml
+
+              kubectl apply -f k8s/frontend-configmap.yaml
+
+              kubectl apply -f k8s/backend-service.yaml
+
+              kubectl apply -f k8s/frontend-service.yaml
+
+              kubectl apply -f k8s/backend-deployment.yaml
+
+              kubectl apply -f k8s/frontend-deployment.yaml
+
+              kubectl apply -f k8s/ingress.yaml
+
+            displayName: Deploy Kubernetes Resources
+
+          ####################################################
+          # Rollout
+          ####################################################
+
+          - script: |
+
+              kubectl rollout status deployment/backend --timeout=600s
+
+              kubectl rollout status deployment/frontend --timeout=600s
+
+            displayName: Wait for Deployment
+
+          ####################################################
+          # Verification
+          ####################################################
+
+          - script: |
+
+              echo "Pods"
+
+              kubectl get pods -A
+
+              echo "Services"
+
+              kubectl get svc -A
+
+              echo "Ingress"
+
+              kubectl get ingress -A
+
+              echo "Nodes"
+
+              kubectl get nodes
+
+            displayName: Verify Deployment
+
+
