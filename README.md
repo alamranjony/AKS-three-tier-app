@@ -1,4 +1,4 @@
-# DevOps Engineer Assessment — Production-Ready Kubernetes Platform on Azure
+# Production-Ready Kubernetes Platform on Azure
 
 Two Node.js apps (frontend + backend), containerized, deployed to Azure
 Kubernetes Service via an Azure DevOps pipeline, on infrastructure
